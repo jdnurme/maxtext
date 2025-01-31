@@ -103,7 +103,7 @@ def _rhs_axis_metadata_wrapper(
       assert len(new_rank) <= 2
        # Check if index below should be zero (num_channels and channel_size) - we want to pick channel size.
       # b/353722489
-      new_mesh_axes[new_rank[-1]] = mesh_axes[orig_rank]
+      new_mesh_axes[new_rank[0]] = mesh_axes[orig_rank]
     mesh_axes = new_mesh_axes
 
   if mesh_axes is not None and len(mesh_axes) > 0:

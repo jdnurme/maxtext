@@ -566,6 +566,34 @@ def is_valid_custom_mesh(ici_parallelism, strategy):
   else:
     raise ValueError(f"The strategy {strategy} to reshape the mesh is invalid.")
 
+def optimize_mesh_for_v6e_2x4(mesh, devices):
+  # Verify that the mesh is a 1D ring.
+  num_devices = len(devices)
+  mesh_is_1d_ring = num_devices in mesh.shape
+  if not mesh_is_1d_ring:
+    return mesh
+
+  # Verify that the physical topology is 2x4
+  device_coords = [d.coords for d in devices]
+  coord_size = len(device_coords[0])
+  # Position-wise max and min coordinates:
+  max_coords = tuple(
+      max(dc[i] for dc in device_coords) for i in range(coord_size)
+  )
+  min_coords = tuple(
+      min(dc[i] for dc in device_coords) for i in range(coord_size)
+  )
+  dims = tuple(h - l + 1 for (h, l) in zip(max_coords, min_coords))
+  if dims != (2, 4, 1):
+    return mesh
+
+  # Adjust the mesh to form contiguous ring.
+  axis_idx = mesh.shape.index(num_devices)
+  new_mesh = np.moveaxis(mesh, axis_idx, 0)
+  new_mesh[4:] = new_mesh[-1:3:-1]
+  new_mesh = np.moveaxis(new_mesh, 0, axis_idx)
+  max_logging.log(f"Optimized mesh for v6e physical topology 2x4")
+  return new_mesh
 
 def create_device_mesh(config, devices=None):
   """Creates a device mesh with each slice in its own data parallel group. If there is only one slice, uses two replicas"""
@@ -616,7 +644,9 @@ def create_device_mesh(config, devices=None):
           ici_parallelism,
           devices,
       )
-
+  # if devices[0].device_kind == "TPU v6 lite" and num_devices == 8:
+  mesh = optimize_mesh_for_v6e_2x4(mesh, devices)
+  
   max_logging.log(f"Num_devices: {num_devices}, shape {mesh.shape}")
 
   return mesh
