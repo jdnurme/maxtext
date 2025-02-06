@@ -139,12 +139,15 @@ class HBMCache:
     max_size_bytes: Total amount of HBM to use for cache
     """
     self._max_size_bytes = max_size_bytes
+    self._key_value_map: dict[Key, Value] = {}
 
   def add_to_cache(self, key: Key, value: Value):
-    pass
+    self._key_value_map[key] = value
 
   def retrieve_from_cache(self, key: Key) -> Optional[Value]:
-    pass
+    if key in self._key_value_map:
+      return self._key_value_map[key]
+    return None
 
 
 class PrefixCache:
@@ -166,11 +169,17 @@ class PrefixCache:
     # Evict any rows if cache is full
     # Store to self.hbm_cache
     # Add to trie
+    self.hbm_cache.add_to_cache(key, value)
+    self.trie.insert(key)
 
   def load(self, key: Key) -> Optional[Value]:
     """Tries to load key from the cache. Returns Value of longest match."""
     # Find key with longest matching prefix in trie
     # fetch value for the key from hbm_cache
+    matched_key = self.trie.get_longest_common_prefix_key(key)
+    if matched_key is None:
+      return None
+    return self.hbm_cache.retrieve_from_cache(matched_key)
 
   def clear(self):
     """Clear entire cache"""
