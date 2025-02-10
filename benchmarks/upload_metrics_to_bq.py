@@ -14,8 +14,10 @@
  limitations under the License.
  """
 
-from typing import Sequence
+from typing import Any, Dict, Sequence
 from statistics import median
+
+import omegaconf
 from command_utils import run_command_with_updates
 from benchmark_db_utils import install_mantaray_locally
 from benchmark_db_utils import write_run
@@ -94,9 +96,16 @@ def parse_metrics(local_metrics_file, total_steps, last_n_steps=10) -> Metrics:
 
   return metrics
 
-# Args
-# metric gcs file location
-#
+
+def update_config_with_tuning_params(base_config: omegaconf.DictConfig,
+                                     tuning_params: Dict[str, Any]):
+  """Updates base_config with key-value pairs from tuning_params."""
+  if tuning_params:
+    for key, value in tuning_params.items():
+      omegaconf.OmegaConf.update(base_config, key, value, merge=True)
+  return base_config
+
+
 def main(argv: Sequence[str]) -> None:
   metrics_gcs_file = argv[0]
   model_id = argv[1]
@@ -114,6 +123,7 @@ def main(argv: Sequence[str]) -> None:
   run_type = argv[13]
   config_file = argv[14]
   topology = argv[15]
+  tuning_params = argv[16]
 
   local_dir = DEFAULT_LOCAL_DIR
 
@@ -159,7 +169,10 @@ def main(argv: Sequence[str]) -> None:
   env_vars = json.dumps(env_dict)
 
   # Framework config in json
-  framework_config = json.dumps({"config": config_file})
+  base_config = omegaconf.OmegaConf.load(config_file)
+  tuning_params = json.loads(tuning_params)
+  config = update_config_with_tuning_params(base_config, tuning_params)
+  framework_config = json.dumps({"config": config})
 
   # Load metrics to bq
   write_run(

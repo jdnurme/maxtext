@@ -25,6 +25,7 @@
 
 import dataclasses
 import enum
+import json
 import omegaconf
 import os
 import random
@@ -40,6 +41,15 @@ from command_utils import run_command_with_updates
 # Assumes you built maxtext dep image.
 # Assumes you have xpk installed in a git clone repo of ~/{wl_config.xpk_path}/xpk.py
 _DEFAULT_MAXTEXT_BASE_DOCKER_IMAGE_NAME = 'maxtext_base_image'
+
+hardware_id_to_num_chips_per_node = {
+    'v4': 4,
+    'v5e': 4,
+    'v5p': 4,
+    'v6e-8': 8,
+    'v6e-1': 1,
+    '6p': 4,
+}
 
 hardware_id_to_num_chips_per_node = {
     'v4': 4,
@@ -85,11 +95,31 @@ class WorkloadConfig:
   pathways_config: PathwaysConfig = None
   run_name: str = None
   generate_metrics_and_upload_to_big_query: bool = True
-  topology: str ='16x16'
-  num_devices: int = 4
   hardware_id: str = 'v6e'
-  metrics_gcs_file: str = 'gs://test-maxtext-metrics'
+  metrics_gcs_file: str = 'test-maxtext-metrics'
   base_config: str = '/deps/MaxText/configs/base.yml'
+  topology: str = dataclasses.field(init=False)
+  num_devices_per_slice: int = dataclasses.field(init=False)
+
+  def __post_init__(self):
+    if self.device_type.startswith("v6e"):
+      size = int(self.device_type.split("-")[1])
+      if size == 256:
+        self.num_devices_per_slice = 256
+        self.topology = "16x16"
+      elif size == 64:
+        self.num_devices_per_slice = 64
+        self.topology = "8x8"
+      elif size == 16:
+        self.num_devices_per_slice = 16
+        self.topology = "4x4"
+      elif size == 4:
+        self.num_devices_per_slice = 4
+        self.topology = "2x2"
+      else:
+        raise ValueError(f"Unsupported v6e size: {size}")
+    else:
+      raise ValueError(f"topology and num_devices_per_slice must be inferred when device_type starts with v6e. device_type: {self.device_type}")
 
 
 @dataclasses.dataclass
@@ -103,52 +133,53 @@ class XpkClusterConfig:
 
 
 def _build_args_from_config(wl_config: WorkloadConfig) -> str:
-    base_config = omegaconf.OmegaConf.load(wl_config.base_config)
+  base_config = omegaconf.OmegaConf.load(wl_config.base_config)
 
-    args = f'{wl_config.metrics_gcs_file} '
-    args += f'{wl_config.model.model_name} '
-    args += f'{wl_config.hardware_id} '
-    args += 'jax_maxtext '
-    args += f'{wl_config.num_devices*hardware_id_to_num_chips_per_node[wl_config.hardware_id]} '
-    args += f'{wl_config.base_docker_image} '
+  args = f'{wl_config.metrics_gcs_file} '
+  args += f'{wl_config.model.model_name} '
+  args += f'{wl_config.hardware_id} '
+  args += 'jax_maxtext '
+  args += f'{wl_config.num_devices_per_slice*wl_config.num_slices*hardware_id_to_num_chips_per_node[wl_config.hardware_id]} '
+  args += f'{wl_config.base_docker_image} '
 
-    if 'per_device_batch_size' not in wl_config.model.tuning_params:
-      per_device_batch_size = base_config.per_device_batch_size
-    else:
-      per_device_batch_size = wl_config.model.tuning_params['per_device_batch_size']
-    args += f"{per_device_batch_size * wl_config.num_devices} "
+  if 'per_device_batch_size' not in wl_config.model.tuning_params:
+    per_device_batch_size = base_config.per_device_batch_size
+  else:
+    per_device_batch_size = wl_config.model.tuning_params['per_device_batch_size']
+  args += f'{per_device_batch_size * wl_config.num_devices_per_slice * wl_config.num_slices} '
 
-    if 'matmul_precision' not in wl_config.model.tuning_params:
-      precision = base_config.matmul_precision
-    else:
-      precision = wl_config.model.tuning_params['matmul_precision']
-    args += f'{precision} '
+  if 'matmul_precision' not in wl_config.model.tuning_params:
+    precision = base_config.matmul_precision
+  else:
+    precision = wl_config.model.tuning_params['matmul_precision']
+  args += f'{precision} '
 
-    if 'opt_type' not in wl_config.model.tuning_params:
-      optimizer = base_config.opt_type
-    else:
-      optimizer = wl_config.model.tuning_params['opt_type']
-    args += f'{optimizer} '
+  if 'opt_type' not in wl_config.model.tuning_params:
+    optimizer = base_config.opt_type
+  else:
+    optimizer = wl_config.model.tuning_params['opt_type']
+  args += f'{optimizer} '
 
-    if 'max_target_length' not in wl_config.model.tuning_params:
-      sequence_length = base_config.opt_type
-    else:
-      sequence_length = wl_config.model.tuning_params['max_target_length']
-    args += f'{sequence_length} '
+  if 'max_target_length' not in wl_config.model.tuning_params:
+    sequence_length = base_config.opt_type
+  else:
+    sequence_length = wl_config.model.tuning_params['max_target_length']
+  args += f'{sequence_length} '
 
-    args += f'{wl_config.num_steps} '
-    args += f'{wl_config.model.xla_flags} '
+  args += f'{wl_config.num_steps} '
+  args += f'{wl_config.model.xla_flags} '
 
-    if 'dataset_type' not in wl_config.model.tuning_params:
-      dataset = base_config.opt_type
-    else:
-      dataset = wl_config.model.tuning_params['dataset_type']
-    args += f'{dataset} '
+  if 'dataset_type' not in wl_config.model.tuning_params:
+    dataset = base_config.opt_type
+  else:
+    dataset = wl_config.model.tuning_params['dataset_type']
+  args += f'{dataset} '
 
-    args += 'maxtext-xpk '
-    args += '/deps/MaxText/configs/base.yml '
-    args += f'{wl_config.topology} '
-    return args
+  args += 'maxtext-xpk '
+  args += '/deps/MaxText/configs/base.yml '
+  args += f'{wl_config.topology} '
+  args += json.dumps(wl_config.model.tuning_params)
+  return args
 
 
 def build_user_command(
@@ -282,12 +313,8 @@ def generate_xpk_workload_cmd(
 
   upload_metrics_to_bq_cmd = ""
   if wl_config.generate_metrics_and_upload_to_big_query:
-    # TODO pass arguments to bq from the maxtext runner.
-    # TODO only run this command if the previous succeeds using &&
-    # TODO enable generate_metrics_and_upload_to_big_query by default in main of this file
     # TODO (optionally) make it so that this upload step is done on local device instead of within the workload.
     args = _build_args_from_config(wl_config)
-
     upload_metrics_to_bq_cmd = f" && python3 benchmarks/upload_metrics_to_bq.py {args}"
 
   print(f'User command: {user_command}')
