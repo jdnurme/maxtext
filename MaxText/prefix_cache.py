@@ -48,7 +48,9 @@ HBMCache
 
 from typing import Tuple, Any, Optional
 import dataclasses
+import jax
 
+import max_logging
 
 Token = int
 # Tuple of tokens from prompt
@@ -56,14 +58,68 @@ Key = Tuple[Token, ...]
 Prefix = Any  # KVCache for one prompt
 
 
-@dataclasses.dataclass
 class Value:
-  """This is the object stored in the hbm and contains the actual KVcache"""
+  """This is the object stored in the hbm and contains the actual KVcache
 
-  prefix: Prefix
-  true_length: int
-  padded_length: int
-  tokens: list[int]
+  Attributes:
+    prefix:
+      Readonly. Prefix Cache using in model. Should be dictionary of jnp.array.
+    true_length:
+      Readonly. True length of tokens calculate prefix. Should be <= than len(tokens).
+      true_length will be min(true_length, len(tokens))
+    padded_length:
+      Readonly. Length of tokens including padding calculate prefix.
+    tokens:
+      Readonly. Tokens calculate prefix. may include partial of padding.
+    prefix_size_bytes:
+      Readonly. bytes of prefix.
+  """
+
+  def __init__(
+      self, *, prefix: Prefix, true_length: int, padded_length: int, tokens: list[int]
+  ):
+    self._prefix = prefix
+    self._prefix_size_bytes: int = self._calculate_prefix_bytes(prefix)
+    self._true_length = self._maybe_adjust_true_length(true_length, tokens)
+    self._padded_length = padded_length
+    self._tokens = tokens
+
+  @property
+  def prefix(self) -> Prefix:
+    return self._prefix
+
+  @property
+  def true_length(self) -> int:
+    return self._true_length
+
+  @property
+  def padded_length(self) -> int:
+    return self._padded_length
+
+  @property
+  def tokens(self) -> list[int]:
+    return self._tokens
+
+  @property
+  def prefix_size_bytes(self) -> int:
+    return self._prefix_size_bytes
+
+  def _calculate_prefix_bytes(self, prefix: Prefix) -> int:
+    def has_nbytes_int(obj) -> bool:
+      return hasattr(obj, "nbytes") and isinstance(obj.nbytes, int)
+
+    # calculate all bytes of jnp.array in the prefix
+    return jax.tree.reduce(
+        lambda acc, array: acc + (array.nbytes if has_nbytes_int(array) else 0),
+        prefix,
+        0,
+    )
+
+  def _maybe_adjust_true_length(self, true_length: int, tokens: list[int]) -> int:
+    if true_length > len(tokens):
+      max_logging.log(f"WARNING: {true_length=} should <= {len(tokens)=}.")
+
+    return min(true_length, len(tokens))
 
 
 class PrefixCacheTrie:
